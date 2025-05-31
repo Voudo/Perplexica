@@ -1,4 +1,4 @@
-FROM node:20.18.0-slim AS builder
+FROM node:20.18.0-slim
 
 WORKDIR /home/perplexica
 
@@ -10,18 +10,9 @@ COPY src ./src
 COPY public ./public
 
 RUN mkdir -p /home/perplexica/data
-RUN yarn build
-
-FROM node:20.18.0-slim
-
-WORKDIR /home/perplexica
-
-COPY --from=builder /home/perplexica/public ./public
-COPY --from=builder /home/perplexica/.next/static ./public/_next/static
-
-COPY --from=builder /home/perplexica/.next/standalone ./
-COPY --from=builder /home/perplexica/data ./data
-
 RUN mkdir /home/perplexica/uploads
 
-CMD ["node", "server.js"]
+ENV NODE_ENV=development
+ENV NEXT_TELEMETRY_DISABLED=1
+
+CMD ["yarn", "dev"]

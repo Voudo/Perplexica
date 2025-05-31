@@ -10,17 +10,20 @@ services:
     restart: unless-stopped
 
   app:
-    image: itzcrazykns1337/perplexica:main
     build:
       context: .
       dockerfile: app.dockerfile
     environment:
+      - NODE_ENV=development
       - SEARXNG_API_URL=http://searxng:8080
     ports:
-      - 3000:3000
+      - 3010:3000
     networks:
       - perplexica-network
     volumes:
+      - .:/home/perplexica
+      - /home/perplexica/node_modules
+      - /home/perplexica/.next
       - backend-dbstore:/home/perplexica/data
       - uploads:/home/perplexica/uploads
       - ./config.toml:/home/perplexica/config.toml
