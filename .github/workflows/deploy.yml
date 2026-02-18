@@ -37,7 +37,7 @@ jobs:
               --aws-sigv4 "aws:amz:us-east-1:s3" \
               --user "${{ secrets.SPACES_ACCESS_KEY }}:${{ secrets.SPACES_SECRET_KEY }}" \
               -H "Content-Type: application/json" \
-              -d '{}' \
+              -d '{"version":4,"terraform_version":"1.0.0","serial":0,"lineage":"","outputs":{},"resources":[]}' \
               "https://perplexica-tfstate.nyc3.digitaloceanspaces.com/terraform.tfstate"
           else
             echo "State file already exists"
