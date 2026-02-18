@@ -1,7 +1,7 @@
 # Perplexica — GitHub CI/CD Deploy
 
 Fully automated deploy of Perplexica backend to DigitalOcean.
-Every push to `main` provisions infrastructure (if needed) and deploys the app.
+Every push to `master` provisions infrastructure (if needed) and deploys the app.
 Zero manual steps after the one-time secret setup below.
 
 ## Architecture
@@ -60,9 +60,9 @@ Go to your fork → **Settings → Secrets and variables → Actions → New rep
 | `SSH_PUBLIC_KEY` | Contents of `perplexica-deploy-key.pub` from Step 4 |
 | `ANTHROPIC_API_KEY` | Your Anthropic API key (`sk-ant-...`) |
 
-### Step 6 — Push to main
+### Step 6 — Push to master
 ```bash
-git push origin main
+git push origin master
 ```
 
 That's it. Watch the Actions tab. Your API will be live at:
