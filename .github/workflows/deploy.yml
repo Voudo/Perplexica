@@ -26,6 +26,23 @@ jobs:
         with:
           terraform_wrapper: false
 
+      - name: Seed tfstate if missing
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.DO_TOKEN }}" \
+            "https://perplexica-tfstate.nyc3.digitaloceanspaces.com/terraform.tfstate")
+          if [ "$STATUS" != "200" ]; then
+            echo "State file not found (HTTP $STATUS), seeding empty state..."
+            curl -s -X PUT \
+              --aws-sigv4 "aws:amz:us-east-1:s3" \
+              --user "${{ secrets.SPACES_ACCESS_KEY }}:${{ secrets.SPACES_SECRET_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d '{}' \
+              "https://perplexica-tfstate.nyc3.digitaloceanspaces.com/terraform.tfstate"
+          else
+            echo "State file already exists"
+          fi
+
       - name: Terraform Init
         working-directory: terraform
         run: terraform init
