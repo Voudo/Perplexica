@@ -70,6 +70,36 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_KEY }}
 
+      - name: Import existing resources
+        working-directory: terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_KEY }}
+        run: |
+          KEY_ID=$(curl -sf -H "Authorization: Bearer ${{ secrets.DO_TOKEN }}" \
+            "https://api.digitalocean.com/v2/account/keys" | \
+            jq -r '.ssh_keys[] | select(.name == "perplexica-deploy-key") | .id // empty')
+          if [ -n "$KEY_ID" ]; then
+            echo "Importing SSH key $KEY_ID"
+            terraform import digitalocean_ssh_key.perplexica "$KEY_ID" || true
+          fi
+
+          DROPLET_ID=$(curl -sf -H "Authorization: Bearer ${{ secrets.DO_TOKEN }}" \
+            "https://api.digitalocean.com/v2/droplets?tag_name=perplexica" | \
+            jq -r '.droplets[0].id // empty')
+          if [ -n "$DROPLET_ID" ] && [ "$DROPLET_ID" != "null" ]; then
+            echo "Importing droplet $DROPLET_ID"
+            terraform import digitalocean_droplet.perplexica "$DROPLET_ID" || true
+          fi
+
+          FW_ID=$(curl -sf -H "Authorization: Bearer ${{ secrets.DO_TOKEN }}" \
+            "https://api.digitalocean.com/v2/firewalls" | \
+            jq -r '.firewalls[] | select(.name == "perplexica-firewall") | .id // empty')
+          if [ -n "$FW_ID" ]; then
+            echo "Importing firewall $FW_ID"
+            terraform import digitalocean_firewall.perplexica "$FW_ID" || true
+          fi
+
       - name: Terraform Apply
         working-directory: terraform
         run: terraform apply -auto-approve
