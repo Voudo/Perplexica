@@ -30,23 +30,27 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
         run: |
-          BODY=$(curl -s \
-            --aws-sigv4 "aws:amz:us-east-1:s3" \
-            --user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
-            "https://perplexica-tfstate.nyc3.digitaloceanspaces.com/terraform.tfstate" 2>/dev/null || true)
-          if echo "$BODY" | grep -q '"version"'; then
-            echo "Valid state file found, skipping seed"
+          ENDPOINT="https://nyc3.digitaloceanspaces.com"
+          SEED='{"version":4,"terraform_version":"1.0.0","serial":0,"lineage":"","outputs":{},"resources":[]}'
+
+          aws s3 cp s3://perplexica-tfstate/terraform.tfstate /tmp/tfstate \
+            --endpoint-url "$ENDPOINT" 2>/dev/null || true
+
+          if [ -f /tmp/tfstate ] && grep -q '"version"' /tmp/tfstate; then
+            echo "Valid state file exists, skipping seed"
+            cat /tmp/tfstate | head -c 200
           else
-            echo "State file missing or invalid, seeding..."
-            SEED='{"version":4,"terraform_version":"1.0.0","serial":0,"lineage":"","outputs":{},"resources":[]}'
-            curl -s -X PUT \
-              --aws-sigv4 "aws:amz:us-east-1:s3" \
-              --user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
-              -H "Content-Type: application/json" \
-              -d "$SEED" \
-              "https://perplexica-tfstate.nyc3.digitaloceanspaces.com/terraform.tfstate"
-            echo "Seeded empty state file"
+            echo "State file missing or invalid, uploading seed..."
+            echo "$SEED" > /tmp/tfstate-seed
+            aws s3 cp /tmp/tfstate-seed s3://perplexica-tfstate/terraform.tfstate \
+              --endpoint-url "$ENDPOINT" \
+              --content-type "application/json"
+            echo "Done — verifying upload..."
+            aws s3 cp s3://perplexica-tfstate/terraform.tfstate /tmp/tfstate-verify \
+              --endpoint-url "$ENDPOINT"
+            cat /tmp/tfstate-verify
           fi
 
       - name: Terraform Init
