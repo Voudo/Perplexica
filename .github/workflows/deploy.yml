@@ -144,29 +144,111 @@ jobs:
 
             docker compose up -d --remove-orphans
 
-            for i in $(seq 1 15); do
-              docker compose exec -T ollama ollama list >/dev/null 2>&1 && break
+            # ── Wait for Ollama to be healthy ──
+            echo ""
+            echo "========================================="
+            echo "  WAITING FOR OLLAMA"
+            echo "========================================="
+            OLLAMA_OK=false
+            for i in $(seq 1 30); do
+              if docker compose exec -T ollama ollama list >/dev/null 2>&1; then
+                OLLAMA_OK=true
+                echo "[OK] Ollama healthy after ~$((i*2))s"
+                break
+              fi
+              echo "  waiting... ($i/30)"
               sleep 2
             done
+            if [ "$OLLAMA_OK" = "false" ]; then
+              echo "[FAIL] Ollama did not become healthy in 60s"
+              echo "--- Ollama logs (last 40 lines) ---"
+              docker compose logs --tail=40 ollama
+              echo "-----------------------------------"
+            fi
 
+            # ── Pull embedding model ──
             if ! docker compose exec -T ollama ollama list 2>/dev/null | grep -q nomic-embed-text; then
               echo "=== Pulling nomic-embed-text ==="
               docker compose exec -T ollama ollama pull nomic-embed-text
             fi
 
+            # ── Wait for Perplexica (which includes SearXNG) ──
+            echo ""
+            echo "========================================="
+            echo "  WAITING FOR PERPLEXICA + SEARXNG"
+            echo "========================================="
+            PERPLEXICA_OK=false
             for i in $(seq 1 30); do
               if curl -sf http://localhost:3000/api/health > /dev/null 2>&1; then
-                echo "=== Perplexica is up ==="
+                PERPLEXICA_OK=true
+                echo "[OK] Perplexica API healthy after ~$((i*2))s"
                 break
               fi
-              [ "$i" -eq 30 ] && echo "WARNING: health check timed out"
+              echo "  waiting... ($i/30)"
               sleep 2
             done
+            if [ "$PERPLEXICA_OK" = "false" ]; then
+              echo "[FAIL] Perplexica did not become healthy in 60s"
+              echo "--- Perplexica logs (last 60 lines) ---"
+              docker compose logs --tail=60 perplexica
+              echo "---------------------------------------"
+            fi
+
+            SEARXNG_OK=false
+            if docker compose exec -T perplexica curl -sf http://localhost:8080 >/dev/null 2>&1; then
+              SEARXNG_OK=true
+              echo "[OK] SearXNG responding inside Perplexica container"
+            else
+              echo "[FAIL] SearXNG not responding on :8080 inside Perplexica container"
+              echo "--- Perplexica logs mentioning SearXNG ---"
+              docker compose logs perplexica 2>&1 | grep -i searx | tail -20 || true
+              echo "------------------------------------------"
+            fi
 
             echo "${{ github.sha }}" > /opt/perplexica/.deployed-sha
-            docker compose ps
+
+            # ── Full diagnostic report ──
+            echo ""
+            echo "========================================="
+            echo "  DEPLOY DIAGNOSTIC REPORT"
+            echo "========================================="
+            echo ""
+            echo "-- Container Status --"
+            docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
+            echo ""
+            echo "-- Health Summary --"
+            echo "  Ollama:     $([ "$OLLAMA_OK" = "true" ] && echo 'HEALTHY' || echo 'UNHEALTHY')"
+            echo "  SearXNG:    $([ "$SEARXNG_OK" = "true" ] && echo 'HEALTHY' || echo 'UNHEALTHY')"
+            echo "  Perplexica: $([ "$PERPLEXICA_OK" = "true" ] && echo 'HEALTHY' || echo 'UNHEALTHY')"
+            echo ""
+            echo "-- Ollama Models --"
+            docker compose exec -T ollama ollama list 2>&1 || echo "  (could not list models)"
+            echo ""
+            echo "-- System Resources --"
+            echo "  Memory: $(free -h | awk '/Mem:/{print $3 "/" $2}')"
+            echo "  Disk:   $(df -h / | awk 'NR==2{print $3 "/" $2 " (" $5 " used)"}')"
+            echo ""
+            echo "-- Recent Perplexica Logs (last 20 lines) --"
+            docker compose logs --tail=20 --no-log-prefix perplexica 2>&1
+            echo ""
+            echo "-- Recent Ollama Logs (last 20 lines) --"
+            docker compose logs --tail=20 --no-log-prefix ollama 2>&1
+            echo ""
+            echo "========================================="
+
+            if [ "$OLLAMA_OK" = "false" ] || [ "$SEARXNG_OK" = "false" ] || [ "$PERPLEXICA_OK" = "false" ]; then
+              echo "WARNING: One or more services are unhealthy — see logs above"
+              exit 1
+            fi
+
+            echo "ALL SERVICES HEALTHY"
 
       - name: Print app URL
+        if: always()
         run: |
           echo "Perplexica API is live at:"
-          echo "http://${{ steps.ip.outputs.value }}:3000/api/search"
+          echo "  http://${{ steps.ip.outputs.value }}:3000/api/search"
+          echo ""
+          echo "SSH into the droplet for live debugging:"
+          echo "  ssh root@${{ steps.ip.outputs.value }}"
+          echo "  cd /opt/perplexica && docker compose logs -f"

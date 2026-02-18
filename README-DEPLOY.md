@@ -112,6 +112,52 @@ print(data["sources"])
 
 ---
 
+## Logging & Troubleshooting
+
+### CI Diagnostics
+Every deploy prints a **Diagnostic Report** at the end of the "Deploy via SSH" step showing:
+- Container status and health for all 3 services (Perplexica, Ollama, SearXNG)
+- Ollama model list (confirms `nomic-embed-text` is loaded)
+- System memory and disk usage
+- Recent logs from each container
+
+If any service is unhealthy, the deploy **fails** and the logs are printed inline.
+
+### Live Debugging via SSH
+```bash
+ssh root@YOUR_DROPLET_IP
+cd /opt/perplexica
+
+# Container status with health
+docker compose ps
+
+# Follow all logs live
+docker compose logs -f
+
+# Perplexica logs only (includes SearXNG output)
+docker compose logs -f perplexica
+
+# Ollama logs only
+docker compose logs -f ollama
+
+# Check SearXNG inside the Perplexica container
+docker compose exec perplexica curl -s http://localhost:8080
+
+# Check Ollama health
+docker compose exec ollama curl -s http://localhost:11434/api/tags
+
+# List Ollama models
+docker compose exec ollama ollama list
+
+# System resources
+free -h && df -h /
+```
+
+### Log Rotation
+Logs use the `json-file` driver with 10MB max-size and 3 rotated files per container (30MB max per service). Docker manages rotation automatically.
+
+---
+
 ## Tearing Down
 To destroy the Droplet and stop paying:
 Go to **Actions → Destroy Infrastructure → Run workflow**
