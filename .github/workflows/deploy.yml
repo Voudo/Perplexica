@@ -26,21 +26,27 @@ jobs:
         with:
           terraform_wrapper: false
 
-      - name: Seed tfstate if missing
+      - name: Seed tfstate if missing or invalid
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_KEY }}
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.DO_TOKEN }}" \
-            "https://perplexica-tfstate.nyc3.digitaloceanspaces.com/terraform.tfstate")
-          if [ "$STATUS" != "200" ]; then
-            echo "State file not found (HTTP $STATUS), seeding empty state..."
+          BODY=$(curl -s \
+            --aws-sigv4 "aws:amz:us-east-1:s3" \
+            --user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
+            "https://perplexica-tfstate.nyc3.digitaloceanspaces.com/terraform.tfstate" 2>/dev/null || true)
+          if echo "$BODY" | grep -q '"version"'; then
+            echo "Valid state file found, skipping seed"
+          else
+            echo "State file missing or invalid, seeding..."
+            SEED='{"version":4,"terraform_version":"1.0.0","serial":0,"lineage":"","outputs":{},"resources":[]}'
             curl -s -X PUT \
               --aws-sigv4 "aws:amz:us-east-1:s3" \
-              --user "${{ secrets.SPACES_ACCESS_KEY }}:${{ secrets.SPACES_SECRET_KEY }}" \
+              --user "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" \
               -H "Content-Type: application/json" \
-              -d '{"version":4,"terraform_version":"1.0.0","serial":0,"lineage":"","outputs":{},"resources":[]}' \
+              -d "$SEED" \
               "https://perplexica-tfstate.nyc3.digitaloceanspaces.com/terraform.tfstate"
-          else
-            echo "State file already exists"
+            echo "Seeded empty state file"
           fi
 
       - name: Terraform Init
