@@ -11,180 +11,162 @@ env:
   TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
 
 jobs:
-  provision:
-    name: Provision Droplet (skips if already exists)
+  deploy:
+    name: Deploy
     runs-on: ubuntu-latest
-    outputs:
-      droplet_ip: ${{ steps.tf_output.outputs.droplet_ip }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check if droplet exists
+        id: droplet
+        run: |
+          IP=$(curl -sf -H "Authorization: Bearer ${{ secrets.DO_TOKEN }}" \
+            "https://api.digitalocean.com/v2/droplets?tag_name=perplexica" | \
+            jq -r '[.droplets[0].networks.v4[] | select(.type=="public") | .ip_address][0] // empty')
+          if [ -n "$IP" ] && [ "$IP" != "null" ]; then
+            echo "ip=$IP" >> $GITHUB_OUTPUT
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check if Terraform files changed
+        id: tf_diff
+        run: |
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            CHANGED=$(git diff HEAD~1 --name-only -- terraform/ | head -1)
+          else
+            CHANGED="initial"
+          fi
+          echo "changed=$( [ -n "$CHANGED" ] && echo true || echo false )" >> $GITHUB_OUTPUT
+
+      # ── Terraform (only when droplet missing or .tf files changed) ──
 
       - name: Setup Terraform
+        if: steps.droplet.outputs.exists != 'true' || steps.tf_diff.outputs.changed == 'true'
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.5.7"
           terraform_wrapper: false
 
-      - name: Seed tfstate if missing or invalid
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_KEY }}
-          AWS_DEFAULT_REGION: us-east-1
-        run: |
-          set -x
-          ENDPOINT="https://nyc3.digitaloceanspaces.com"
-          BUCKET="perplexica-tfstate"
-          KEY="terraform.tfstate"
-          SEED='{"version":4,"terraform_version":"1.0.0","serial":0,"lineage":"","outputs":{},"resources":[]}'
-
-          echo "=== Deleting existing (possibly corrupt) state file ==="
-          aws s3 rm "s3://${BUCKET}/${KEY}" --endpoint-url "$ENDPOINT" || true
-
-          echo "=== Uploading valid empty state ==="
-          echo "$SEED" > /tmp/tfstate-seed
-          cat /tmp/tfstate-seed
-          aws s3api put-object \
-            --bucket "$BUCKET" \
-            --key "$KEY" \
-            --body /tmp/tfstate-seed \
-            --content-type "application/json" \
-            --endpoint-url "$ENDPOINT"
-
-          echo "=== Verifying upload ==="
-          aws s3api get-object \
-            --bucket "$BUCKET" \
-            --key "$KEY" \
-            --endpoint-url "$ENDPOINT" \
-            /tmp/tfstate-verify
-          echo "Downloaded content:"
-          cat /tmp/tfstate-verify
-          echo ""
-          echo "Byte count: $(wc -c < /tmp/tfstate-verify)"
+      - name: Cache Terraform providers
+        if: steps.droplet.outputs.exists != 'true' || steps.tf_diff.outputs.changed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: terraform/.terraform
+          key: terraform-${{ hashFiles('terraform/.terraform.lock.hcl') }}
 
       - name: Terraform Init
+        if: steps.droplet.outputs.exists != 'true' || steps.tf_diff.outputs.changed == 'true'
         working-directory: terraform
         run: terraform init
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_KEY }}
 
-      - name: Import existing resources
-        working-directory: terraform
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_KEY }}
-        run: |
-          KEY_ID=$(curl -sf -H "Authorization: Bearer ${{ secrets.DO_TOKEN }}" \
-            "https://api.digitalocean.com/v2/account/keys" | \
-            jq -r '.ssh_keys[] | select(.name == "perplexica-deploy-key") | .id // empty')
-          if [ -n "$KEY_ID" ]; then
-            echo "Importing SSH key $KEY_ID"
-            terraform import digitalocean_ssh_key.perplexica "$KEY_ID" || true
-          fi
-
-          DROPLET_ID=$(curl -sf -H "Authorization: Bearer ${{ secrets.DO_TOKEN }}" \
-            "https://api.digitalocean.com/v2/droplets?tag_name=perplexica" | \
-            jq -r '.droplets[0].id // empty')
-          if [ -n "$DROPLET_ID" ] && [ "$DROPLET_ID" != "null" ]; then
-            echo "Importing droplet $DROPLET_ID"
-            terraform import digitalocean_droplet.perplexica "$DROPLET_ID" || true
-          fi
-
-          FW_ID=$(curl -sf -H "Authorization: Bearer ${{ secrets.DO_TOKEN }}" \
-            "https://api.digitalocean.com/v2/firewalls" | \
-            jq -r '.firewalls[] | select(.name == "perplexica-firewall") | .id // empty')
-          if [ -n "$FW_ID" ]; then
-            echo "Importing firewall $FW_ID"
-            terraform import digitalocean_firewall.perplexica "$FW_ID" || true
-          fi
-
       - name: Terraform Apply
+        if: steps.droplet.outputs.exists != 'true' || steps.tf_diff.outputs.changed == 'true'
         working-directory: terraform
         run: terraform apply -auto-approve
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_KEY }}
 
-      - name: Get Droplet IP
-        id: tf_output
+      - name: Get Droplet IP from Terraform
+        if: steps.droplet.outputs.exists != 'true' || steps.tf_diff.outputs.changed == 'true'
+        id: tf_ip
         working-directory: terraform
-        run: echo "droplet_ip=$(terraform output -raw droplet_ip)" >> $GITHUB_OUTPUT
+        run: echo "ip=$(terraform output -raw droplet_ip)" >> $GITHUB_OUTPUT
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_KEY }}
 
-  deploy:
-    name: Deploy Application
-    runs-on: ubuntu-latest
-    needs: provision
+      # ── Resolve IP from whichever source provided it ──
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Resolve Droplet IP
+        id: ip
+        run: echo "value=${{ steps.droplet.outputs.ip || steps.tf_ip.outputs.ip }}" >> $GITHUB_OUTPUT
+
+      # ── Deploy application ──
 
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ needs.provision.outputs.droplet_ip }}
+          host: ${{ steps.ip.outputs.value }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          command_timeout: 20m
+          command_timeout: 10m
           script: |
             set -e
+
+            DEPLOYED_SHA=""
+            [ -f /opt/perplexica/.deployed-sha ] && DEPLOYED_SHA=$(cat /opt/perplexica/.deployed-sha)
+            if [ "$DEPLOYED_SHA" = "${{ github.sha }}" ]; then
+              echo "=== Already running commit ${{ github.sha }}, nothing to do ==="
+              exit 0
+            fi
 
             if ! command -v docker &> /dev/null; then
               echo "=== Installing Docker ==="
               curl -fsSL https://get.docker.com | sh
               systemctl enable docker
               systemctl start docker
-            else
-              echo "=== Docker already installed ==="
             fi
 
             if [ -d /opt/perplexica/.git ]; then
-              echo "=== Updating repo ==="
               cd /opt/perplexica
               git fetch origin
               git reset --hard origin/master
             else
-              echo "=== Cloning repo ==="
               git clone https://github.com/${{ github.repository }} /opt/perplexica
-              cd /opt/perplexica
             fi
 
             cd /opt/perplexica
 
-            echo "=== Writing .env ==="
             cat > .env <<EOF
             ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
             EOF
 
-            echo "=== Pulling Docker images ==="
-            docker compose -f docker-compose.yml pull
+            NEW_HASH=$(sha256sum docker-compose.yml | cut -d' ' -f1)
+            OLD_HASH=""
+            [ -f .compose-hash ] && OLD_HASH=$(cat .compose-hash)
+            if [ "$NEW_HASH" != "$OLD_HASH" ]; then
+              echo "=== docker-compose.yml changed, pulling images ==="
+              docker compose pull
+              echo "$NEW_HASH" > .compose-hash
+            else
+              echo "=== docker-compose.yml unchanged, skipping pull ==="
+            fi
 
-            echo "=== Starting services ==="
-            docker compose -f docker-compose.yml up -d --remove-orphans
+            docker compose up -d --remove-orphans
 
-            echo "=== Ensuring nomic-embed-text is available ==="
-            sleep 10
-            docker compose -f docker-compose.yml exec -T ollama ollama pull nomic-embed-text
-
-            echo "=== Waiting for Perplexica to be healthy ==="
-            for i in $(seq 1 12); do
-              if curl -sf http://localhost:3000/api/health > /dev/null 2>&1; then
-                echo "Perplexica is up!"
-                break
-              fi
-              echo "Attempt $i/12, retrying in 10s..."
-              sleep 10
+            for i in $(seq 1 15); do
+              docker compose exec -T ollama ollama list >/dev/null 2>&1 && break
+              sleep 2
             done
 
-            echo "=== Deploy complete ==="
-            docker compose -f docker-compose.yml ps
+            if ! docker compose exec -T ollama ollama list 2>/dev/null | grep -q nomic-embed-text; then
+              echo "=== Pulling nomic-embed-text ==="
+              docker compose exec -T ollama ollama pull nomic-embed-text
+            fi
+
+            for i in $(seq 1 30); do
+              if curl -sf http://localhost:3000/api/health > /dev/null 2>&1; then
+                echo "=== Perplexica is up ==="
+                break
+              fi
+              [ "$i" -eq 30 ] && echo "WARNING: health check timed out"
+              sleep 2
+            done
+
+            echo "${{ github.sha }}" > /opt/perplexica/.deployed-sha
+            docker compose ps
 
       - name: Print app URL
         run: |
           echo "Perplexica API is live at:"
-          echo "http://${{ needs.provision.outputs.droplet_ip }}:3000/api/search"
+          echo "http://${{ steps.ip.outputs.value }}:3000/api/search"
