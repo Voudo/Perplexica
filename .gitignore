@@ -43,3 +43,5 @@ db.sqlite
 *.tfstate
 *.tfstate.backup
 .terraform.lock.hcl
+
+certificates

@@ -1,17 +1,22 @@
-import dot from 'compute-dot';
-import cosineSimilarity from 'compute-cosine-similarity';
-import { getSimilarityMeasure } from '../config';
-
 const computeSimilarity = (x: number[], y: number[]): number => {
-  const similarityMeasure = getSimilarityMeasure();
+  if (x.length !== y.length)
+    throw new Error('Vectors must be of the same length');
 
-  if (similarityMeasure === 'cosine') {
-    return cosineSimilarity(x, y) as number;
-  } else if (similarityMeasure === 'dot') {
-    return dot(x, y);
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+
+  for (let i = 0; i < x.length; i++) {
+    dotProduct += x[i] * y[i];
+    normA += x[i] * x[i];
+    normB += y[i] * y[i];
   }
 
-  throw new Error('Invalid similarity measure');
+  if (normA === 0 || normB === 0) {
+    return 0;
+  }
+
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 };
 
 export default computeSimilarity;

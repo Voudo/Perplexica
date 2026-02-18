@@ -1,8 +1,11 @@
-import { BaseMessage } from '@langchain/core/messages';
+import { ChatTurnMessage } from '../types';
 
-const formatChatHistoryAsString = (history: BaseMessage[]) => {
+const formatChatHistoryAsString = (history: ChatTurnMessage[]) => {
   return history
-    .map((message) => `${message._getType()}: ${message.content}`)
+    .map(
+      (message) =>
+        `${message.role === 'assistant' ? 'AI' : 'User'}: ${message.content}`,
+    )
     .join('\n');
 };
 

@@ -2,84 +2,76 @@
 
 import { Fragment, useEffect, useRef, useState } from 'react';
 import MessageInput from './MessageInput';
-import { File, Message } from './ChatWindow';
 import MessageBox from './MessageBox';
 import MessageBoxLoading from './MessageBoxLoading';
+import { useChat } from '@/lib/hooks/useChat';
 
-const Chat = ({
-  loading,
-  messages,
-  sendMessage,
-  messageAppeared,
-  rewrite,
-  fileIds,
-  setFileIds,
-  files,
-  setFiles,
-}: {
-  messages: Message[];
-  sendMessage: (message: string) => void;
-  loading: boolean;
-  messageAppeared: boolean;
-  rewrite: (messageId: string) => void;
-  fileIds: string[];
-  setFileIds: (fileIds: string[]) => void;
-  files: File[];
-  setFiles: (files: File[]) => void;
-}) => {
+const Chat = () => {
+  const { sections, loading, messageAppeared, messages } = useChat();
+
   const [dividerWidth, setDividerWidth] = useState(0);
   const dividerRef = useRef<HTMLDivElement | null>(null);
   const messageEnd = useRef<HTMLDivElement | null>(null);
+  const lastScrolledRef = useRef<number>(0);
 
   useEffect(() => {
     const updateDividerWidth = () => {
       if (dividerRef.current) {
-        setDividerWidth(dividerRef.current.scrollWidth);
+        setDividerWidth(dividerRef.current.offsetWidth);
       }
     };
 
     updateDividerWidth();
 
+    const resizeObserver = new ResizeObserver(() => {
+      updateDividerWidth();
+    });
+
+    const currentRef = dividerRef.current;
+    if (currentRef) {
+      resizeObserver.observe(currentRef);
+    }
+
     window.addEventListener('resize', updateDividerWidth);
 
     return () => {
+      if (currentRef) {
+        resizeObserver.unobserve(currentRef);
+      }
+      resizeObserver.disconnect();
       window.removeEventListener('resize', updateDividerWidth);
     };
-  });
+  }, [sections.length]);
 
   useEffect(() => {
     const scroll = () => {
-      messageEnd.current?.scrollIntoView({ behavior: 'smooth' });
+      messageEnd.current?.scrollIntoView({ behavior: 'auto' });
     };
 
     if (messages.length === 1) {
-      document.title = `${messages[0].content.substring(0, 30)} - Perplexica`;
+      document.title = `${messages[0].query.substring(0, 30)} - Perplexica`;
     }
 
-    if (messages[messages.length - 1]?.role == 'user') {
+    if (sections.length > lastScrolledRef.current) {
       scroll();
+      lastScrolledRef.current = sections.length;
     }
   }, [messages]);
 
   return (
-    <div className="flex flex-col space-y-6 pt-8 pb-44 lg:pb-32 sm:mx-4 md:mx-8">
-      {messages.map((msg, i) => {
-        const isLast = i === messages.length - 1;
+    <div className="flex flex-col space-y-6 pt-8 pb-44 lg:pb-28 sm:mx-4 md:mx-8">
+      {sections.map((section, i) => {
+        const isLast = i === sections.length - 1;
 
         return (
-          <Fragment key={msg.messageId}>
+          <Fragment key={section.message.messageId}>
             <MessageBox
-              key={i}
-              message={msg}
-              messageIndex={i}
-              history={messages}
-              loading={loading}
+              section={section}
+              sectionIndex={i}
               dividerRef={isLast ? dividerRef : undefined}
               isLast={isLast}
-              rewrite={rewrite}
-              sendMessage={sendMessage}
             />
-            {!isLast && msg.role === 'assistant' && (
+            {!isLast && (
               <div className="h-px w-full bg-light-secondary dark:bg-dark-secondary" />
             )}
           </Fragment>
@@ -89,17 +81,24 @@ const Chat = ({
       <div ref={messageEnd} className="h-0" />
       {dividerWidth > 0 && (
         <div
-          className="bottom-24 lg:bottom-10 fixed z-40"
+          className="fixed z-40 bottom-24 lg:bottom-6"
           style={{ width: dividerWidth }}
         >
-          <MessageInput
-            loading={loading}
-            sendMessage={sendMessage}
-            fileIds={fileIds}
-            setFileIds={setFileIds}
-            files={files}
-            setFiles={setFiles}
+          <div
+            className="pointer-events-none absolute -bottom-6 left-0 right-0 h-[calc(100%+24px+24px)] dark:hidden"
+            style={{
+              background:
+                'linear-gradient(to top, #ffffff 0%, #ffffff 35%, rgba(255,255,255,0.95) 45%, rgba(255,255,255,0.85) 55%, rgba(255,255,255,0.7) 65%, rgba(255,255,255,0.5) 75%, rgba(255,255,255,0.3) 85%, rgba(255,255,255,0.1) 92%, transparent 100%)',
+            }}
           />
+          <div
+            className="pointer-events-none absolute -bottom-6 left-0 right-0 h-[calc(100%+24px+24px)] hidden dark:block"
+            style={{
+              background:
+                'linear-gradient(to top, #0d1117 0%, #0d1117 35%, rgba(13,17,23,0.95) 45%, rgba(13,17,23,0.85) 55%, rgba(13,17,23,0.7) 65%, rgba(13,17,23,0.5) 75%, rgba(13,17,23,0.3) 85%, rgba(13,17,23,0.1) 92%, transparent 100%)',
+            }}
+          />
+          <MessageInput />
         </div>
       )}
     </div>

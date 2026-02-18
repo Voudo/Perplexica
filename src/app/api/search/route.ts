@@ -1,36 +1,15 @@
-import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import type { Embeddings } from '@langchain/core/embeddings';
-import { ChatOpenAI } from '@langchain/openai';
-import {
-  getAvailableChatModelProviders,
-  getAvailableEmbeddingModelProviders,
-} from '@/lib/providers';
-import { AIMessage, BaseMessage, HumanMessage } from '@langchain/core/messages';
-import { MetaSearchAgentType } from '@/lib/search/metaSearchAgent';
-import {
-  getCustomOpenaiApiKey,
-  getCustomOpenaiApiUrl,
-  getCustomOpenaiModelName,
-} from '@/lib/config';
-import { searchHandlers } from '@/lib/search';
-
-interface chatModel {
-  provider: string;
-  name: string;
-  customOpenAIKey?: string;
-  customOpenAIBaseURL?: string;
-}
-
-interface embeddingModel {
-  provider: string;
-  name: string;
-}
+import ModelRegistry from '@/lib/models/registry';
+import { ModelWithProvider } from '@/lib/models/types';
+import SessionManager from '@/lib/session';
+import { ChatTurnMessage } from '@/lib/types';
+import { SearchSources } from '@/lib/agents/search/types';
+import APISearchAgent from '@/lib/agents/search/api';
 
 interface ChatRequestBody {
-  optimizationMode: 'speed' | 'balanced';
-  focusMode: string;
-  chatModel?: chatModel;
-  embeddingModel?: embeddingModel;
+  optimizationMode: 'speed' | 'balanced' | 'quality';
+  sources: SearchSources[];
+  chatModel: ModelWithProvider;
+  embeddingModel: ModelWithProvider;
   query: string;
   history: Array<[string, string]>;
   stream?: boolean;
@@ -41,93 +20,51 @@ export const POST = async (req: Request) => {
   try {
     const body: ChatRequestBody = await req.json();
 
-    if (!body.focusMode || !body.query) {
+    if (!body.sources || !body.query) {
       return Response.json(
-        { message: 'Missing focus mode or query' },
+        { message: 'Missing sources or query' },
         { status: 400 },
       );
     }
 
     body.history = body.history || [];
-    body.optimizationMode = body.optimizationMode || 'balanced';
+    body.optimizationMode = body.optimizationMode || 'speed';
     body.stream = body.stream || false;
 
-    const history: BaseMessage[] = body.history.map((msg) => {
-      return msg[0] === 'human'
-        ? new HumanMessage({ content: msg[1] })
-        : new AIMessage({ content: msg[1] });
-    });
+    const registry = new ModelRegistry();
 
-    const [chatModelProviders, embeddingModelProviders] = await Promise.all([
-      getAvailableChatModelProviders(),
-      getAvailableEmbeddingModelProviders(),
+    const [llm, embeddings] = await Promise.all([
+      registry.loadChatModel(body.chatModel.providerId, body.chatModel.key),
+      registry.loadEmbeddingModel(
+        body.embeddingModel.providerId,
+        body.embeddingModel.key,
+      ),
     ]);
 
-    const chatModelProvider =
-      body.chatModel?.provider || Object.keys(chatModelProviders)[0];
-    const chatModel =
-      body.chatModel?.name ||
-      Object.keys(chatModelProviders[chatModelProvider])[0];
+    const history: ChatTurnMessage[] = body.history.map((msg) => {
+      return msg[0] === 'human'
+        ? { role: 'user', content: msg[1] }
+        : { role: 'assistant', content: msg[1] };
+    });
 
-    const embeddingModelProvider =
-      body.embeddingModel?.provider || Object.keys(embeddingModelProviders)[0];
-    const embeddingModel =
-      body.embeddingModel?.name ||
-      Object.keys(embeddingModelProviders[embeddingModelProvider])[0];
+    const session = SessionManager.createSession();
 
-    let llm: BaseChatModel | undefined;
-    let embeddings: Embeddings | undefined;
+    const agent = new APISearchAgent();
 
-    if (body.chatModel?.provider === 'custom_openai') {
-      llm = new ChatOpenAI({
-        modelName: body.chatModel?.name || getCustomOpenaiModelName(),
-        openAIApiKey:
-          body.chatModel?.customOpenAIKey || getCustomOpenaiApiKey(),
-        temperature: 0.7,
-        configuration: {
-          baseURL:
-            body.chatModel?.customOpenAIBaseURL || getCustomOpenaiApiUrl(),
-        },
-      }) as unknown as BaseChatModel;
-    } else if (
-      chatModelProviders[chatModelProvider] &&
-      chatModelProviders[chatModelProvider][chatModel]
-    ) {
-      llm = chatModelProviders[chatModelProvider][chatModel]
-        .model as unknown as BaseChatModel | undefined;
-    }
-
-    if (
-      embeddingModelProviders[embeddingModelProvider] &&
-      embeddingModelProviders[embeddingModelProvider][embeddingModel]
-    ) {
-      embeddings = embeddingModelProviders[embeddingModelProvider][
-        embeddingModel
-      ].model as Embeddings | undefined;
-    }
-
-    if (!llm || !embeddings) {
-      return Response.json(
-        { message: 'Invalid model selected' },
-        { status: 400 },
-      );
-    }
-
-    const searchHandler: MetaSearchAgentType = searchHandlers[body.focusMode];
-
-    if (!searchHandler) {
-      return Response.json({ message: 'Invalid focus mode' }, { status: 400 });
-    }
-
-    const emitter = await searchHandler.searchAndAnswer(
-      body.query,
-      history,
-      llm,
-      embeddings,
-      body.optimizationMode,
-      [],
-      body.systemInstructions || '',
-    );
+    agent.searchAsync(session, {
+      chatHistory: history,
+      config: {
+        embedding: embeddings,
+        llm: llm,
+        sources: body.sources,
+        mode: body.optimizationMode,
+        fileIds: [],
+        systemInstructions: body.systemInstructions || '',
+      },
+      followUp: body.query,
+      chatId: crypto.randomUUID(),
+      messageId: crypto.randomUUID(),
+    });
 
     if (!body.stream) {
       return new Promise(
@@ -138,35 +75,36 @@ export const POST = async (req: Request) => {
           let message = '';
           let sources: any[] = [];
 
-          emitter.on('data', (data: string) => {
-            try {
-              const parsedData = JSON.parse(data);
-              if (parsedData.type === 'response') {
-                message += parsedData.data;
-              } else if (parsedData.type === 'sources') {
-                sources = parsedData.data;
+          session.subscribe((event: string, data: Record<string, any>) => {
+            if (event === 'data') {
+              try {
+                if (data.type === 'response') {
+                  message += data.data;
+                } else if (data.type === 'searchResults') {
+                  sources = data.data;
+                }
+              } catch (error) {
+                reject(
+                  Response.json(
+                    { message: 'Error parsing data' },
+                    { status: 500 },
+                  ),
+                );
               }
-            } catch (error) {
+            }
+
+            if (event === 'end') {
+              resolve(Response.json({ message, sources }, { status: 200 }));
+            }
+
+            if (event === 'error') {
               reject(
                 Response.json(
-                  { message: 'Error parsing data' },
+                  { message: 'Search error', error: data },
                   { status: 500 },
                 ),
               );
             }
-          });
-
-          emitter.on('end', () => {
-            resolve(Response.json({ message, sources }, { status: 200 }));
-          });
-
-          emitter.on('error', (error: any) => {
-            reject(
-              Response.json(
-                { message: 'Search error', error },
-                { status: 500 },
-              ),
-            );
           });
         },
       );
@@ -191,61 +129,61 @@ export const POST = async (req: Request) => {
         );
 
         signal.addEventListener('abort', () => {
-          emitter.removeAllListeners();
+          session.removeAllListeners();
 
           try {
             controller.close();
           } catch (error) {}
         });
 
-        emitter.on('data', (data: string) => {
-          if (signal.aborted) return;
+        session.subscribe((event: string, data: Record<string, any>) => {
+          if (event === 'data') {
+            if (signal.aborted) return;
 
-          try {
-            const parsedData = JSON.parse(data);
-
-            if (parsedData.type === 'response') {
-              controller.enqueue(
-                encoder.encode(
-                  JSON.stringify({
-                    type: 'response',
-                    data: parsedData.data,
-                  }) + '\n',
-                ),
-              );
-            } else if (parsedData.type === 'sources') {
-              sources = parsedData.data;
-              controller.enqueue(
-                encoder.encode(
-                  JSON.stringify({
-                    type: 'sources',
-                    data: sources,
-                  }) + '\n',
-                ),
-              );
+            try {
+              if (data.type === 'response') {
+                controller.enqueue(
+                  encoder.encode(
+                    JSON.stringify({
+                      type: 'response',
+                      data: data.data,
+                    }) + '\n',
+                  ),
+                );
+              } else if (data.type === 'searchResults') {
+                sources = data.data;
+                controller.enqueue(
+                  encoder.encode(
+                    JSON.stringify({
+                      type: 'sources',
+                      data: sources,
+                    }) + '\n',
+                  ),
+                );
+              }
+            } catch (error) {
+              controller.error(error);
             }
-          } catch (error) {
-            controller.error(error);
           }
-        });
 
-        emitter.on('end', () => {
-          if (signal.aborted) return;
+          if (event === 'end') {
+            if (signal.aborted) return;
 
-          controller.enqueue(
-            encoder.encode(
-              JSON.stringify({
-                type: 'done',
-              }) + '\n',
-            ),
-          );
-          controller.close();
-        });
+            controller.enqueue(
+              encoder.encode(
+                JSON.stringify({
+                  type: 'done',
+                }) + '\n',
+              ),
+            );
+            controller.close();
+          }
 
-        emitter.on('error', (error: any) => {
-          if (signal.aborted) return;
+          if (event === 'error') {
+            if (signal.aborted) return;
 
-          controller.error(error);
+            controller.error(data);
+          }
         });
       },
       cancel() {
