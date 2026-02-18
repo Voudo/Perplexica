@@ -24,6 +24,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
+          terraform_version: "1.5.7"
           terraform_wrapper: false
 
       - name: Seed tfstate if missing or invalid
@@ -32,26 +33,35 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_KEY }}
           AWS_DEFAULT_REGION: us-east-1
         run: |
+          set -x
           ENDPOINT="https://nyc3.digitaloceanspaces.com"
+          BUCKET="perplexica-tfstate"
+          KEY="terraform.tfstate"
           SEED='{"version":4,"terraform_version":"1.0.0","serial":0,"lineage":"","outputs":{},"resources":[]}'
 
-          aws s3 cp s3://perplexica-tfstate/terraform.tfstate /tmp/tfstate \
-            --endpoint-url "$ENDPOINT" 2>/dev/null || true
+          echo "=== Deleting existing (possibly corrupt) state file ==="
+          aws s3 rm "s3://${BUCKET}/${KEY}" --endpoint-url "$ENDPOINT" || true
 
-          if [ -f /tmp/tfstate ] && grep -q '"version"' /tmp/tfstate; then
-            echo "Valid state file exists, skipping seed"
-            cat /tmp/tfstate | head -c 200
-          else
-            echo "State file missing or invalid, uploading seed..."
-            echo "$SEED" > /tmp/tfstate-seed
-            aws s3 cp /tmp/tfstate-seed s3://perplexica-tfstate/terraform.tfstate \
-              --endpoint-url "$ENDPOINT" \
-              --content-type "application/json"
-            echo "Done — verifying upload..."
-            aws s3 cp s3://perplexica-tfstate/terraform.tfstate /tmp/tfstate-verify \
-              --endpoint-url "$ENDPOINT"
-            cat /tmp/tfstate-verify
-          fi
+          echo "=== Uploading valid empty state ==="
+          echo "$SEED" > /tmp/tfstate-seed
+          cat /tmp/tfstate-seed
+          aws s3api put-object \
+            --bucket "$BUCKET" \
+            --key "$KEY" \
+            --body /tmp/tfstate-seed \
+            --content-type "application/json" \
+            --endpoint-url "$ENDPOINT"
+
+          echo "=== Verifying upload ==="
+          aws s3api get-object \
+            --bucket "$BUCKET" \
+            --key "$KEY" \
+            --endpoint-url "$ENDPOINT" \
+            /tmp/tfstate-verify
+          echo "Downloaded content:"
+          cat /tmp/tfstate-verify
+          echo ""
+          echo "Byte count: $(wc -c < /tmp/tfstate-verify)"
 
       - name: Terraform Init
         working-directory: terraform

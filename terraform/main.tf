@@ -10,20 +10,16 @@ terraform {
   # This means Terraform remembers the Droplet exists between runs
   # so it won't create a new one on every push
   backend "s3" {
-    endpoints = {
-      s3 = "https://nyc3.digitaloceanspaces.com"
-    }
-    bucket = "perplexica-tfstate"
-    key    = "terraform.tfstate"
-    region = "us-east-1" # required by terraform, ignored by DO
+    endpoint = "https://nyc3.digitaloceanspaces.com"
+    bucket   = "perplexica-tfstate"
+    key      = "terraform.tfstate"
+    region   = "us-east-1"
 
     encrypt                     = false
     skip_credentials_validation = true
-    skip_requesting_account_id  = true
     skip_metadata_api_check     = true
     skip_region_validation      = true
-    skip_s3_checksum            = true
-    use_path_style              = true
+    force_path_style            = true
   }
 }
 
