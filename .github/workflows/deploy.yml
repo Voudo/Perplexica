@@ -94,26 +94,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Wait for SSH to be ready
-        run: |
-          echo "Waiting for droplet to be SSH-ready..."
-          SSH_READY=false
-          for i in $(seq 1 20); do
-            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
-              -i <(echo "${{ secrets.SSH_PRIVATE_KEY }}") \
-              root@${{ needs.provision.outputs.droplet_ip }} echo "ready" 2>/dev/null; then
-              echo "SSH is ready"
-              SSH_READY=true
-              break
-            fi
-            echo "Attempt $i/20 failed, retrying in 15s..."
-            sleep 15
-          done
-          if [ "$SSH_READY" != "true" ]; then
-            echo "SSH never became ready after 20 attempts"
-            exit 1
-          fi
-
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
